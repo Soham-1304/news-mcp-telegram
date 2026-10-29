@@ -1,0 +1,38 @@
+services:
+  # ===========================================================================
+  # SERVER 1: News Aggregator MCP Server (Decoupled Tool Provider)
+  # Exposes Model Context Protocol over SSE (Server-Sent Events) at /sse
+  # ===========================================================================
+  - type: web
+    name: news-mcp-server
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m mcp_server.app
+    envVars:
+      - key: PORT
+        value: "8001"
+
+  # ===========================================================================
+  # SERVER 2: Telegram AI Agent + Cron Orchestrator
+  # Connects to Server 1 over SSE via MCP_SERVER_URL
+  # Runs the LangGraph Workflow, SQLite Deduplication & 7:00 AM Daily Cron
+  # ===========================================================================
+  - type: worker
+    name: news-telegram-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.main
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: MCP_SERVER_URL
+        value: "https://news-mcp-server.onrender.com/sse"
+      - key: SCHEDULE_TIME
+        value: "07:00"
+      - key: SCHEDULE_TIMEZONE
+        value: "Asia/Kolkata"

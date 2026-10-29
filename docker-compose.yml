@@ -1,0 +1,28 @@
+services:
+  # SERVER 1: Standalone News MCP Server
+  mcp-server:
+    build: .
+    container_name: techno-mcp-server
+    restart: unless-stopped
+    command: ["python", "-m", "mcp_server.app"]
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - PYTHONUNBUFFERED=1
+
+  # SERVER 2: Telegram AI Agent + Cron Orchestrator
+  news-agent:
+    build: .
+    container_name: techno-news-agent
+    restart: unless-stopped
+    command: ["python", "-m", "bot.main"]
+    depends_on:
+      - mcp-server
+    env_file:
+      - .env
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:8001/sse
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data

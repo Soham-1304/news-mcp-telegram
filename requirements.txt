@@ -1,0 +1,24 @@
+# Core Agent & Graph
+langchain>=0.3.0
+langchain-core>=0.3.0
+langgraph>=0.2.0
+langchain-groq>=0.2.0
+
+# MCP (Model Context Protocol)
+mcp>=1.2.0
+
+# Telegram Bot
+python-telegram-bot[job-queue]>=21.0
+
+# News Parsing & Scraping
+feedparser>=6.0.11
+trafilatura>=1.12.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Deduplication, Matching & Storage
+rapidfuzz>=3.9.0
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+tzdata>=2024.1
+
