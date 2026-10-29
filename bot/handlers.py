@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from agent.workflow import generate_newsletter, chat_with_agent
 from agent.tools import search_news_tool
 from agent.config import SCHEDULE_TIME, SCHEDULE_TIMEZONE
-from bot.formatter import clean_and_format_for_telegram, chunk_message
+from bot.formatter import clean_and_format_for_telegram, chunk_message, html_to_plain_text_with_links
 from storage.database import get_connection
 
 logger = logging.getLogger("news_agent.bot.handlers")
@@ -39,8 +39,8 @@ async def send_formatted_message(update: Update, text: str, reply_to_message: bo
             elif update.effective_chat:
                 await update.effective_chat.send_message(chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         except Exception as e:
-            logger.warning(f"HTML send failed ({e}), stripping tags and retrying as plain text")
-            plain_text = re.sub(r"<[^>]+>", "", chunk)
+            logger.warning(f"HTML send failed ({e}), sending plain text with preserved links")
+            plain_text = html_to_plain_text_with_links(chunk)
             if reply_to_message and i == 0 and update.message:
                 await update.message.reply_text(plain_text)
             elif update.effective_chat:

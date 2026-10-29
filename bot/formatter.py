@@ -3,6 +3,42 @@ import html
 from typing import List
 
 
+def sanitize_telegram_html(raw_html: str) -> str:
+    """
+    Escapes standalone '&', '<', and '>' that would otherwise break Telegram's HTML parser,
+    while carefully keeping valid Telegram HTML tags (<b>, <i>, <u>, <s>, <a>, <code>, <pre>) intact.
+    """
+    tag_pattern = re.compile(r'(</?(?:b|i|u|s|code|pre)>|<a\s+href="[^"]+">|</a>)', re.IGNORECASE)
+    parts = tag_pattern.split(raw_html)
+
+    sanitized = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            # Valid allowed HTML tag
+            sanitized.append(part)
+        else:
+            # Prose text: escape unescaped &, <, >
+            text = part
+            text = re.sub(r'&(?!(?:amp|lt|gt|quot);)', '&amp;', text)
+            text = text.replace('<', '&lt;').replace('>', '&gt;')
+            sanitized.append(text)
+
+    return ''.join(sanitized)
+
+
+def html_to_plain_text_with_links(text: str) -> str:
+    """
+    Converts HTML into readable plain text, preserving hyperlinks as:
+    'Headline (https://...)' so links are NEVER lost even on fallback!
+    """
+    # Replace <a href="URL">Anchor</a> with 'Anchor (URL)'
+    converted = re.sub(r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', r'\2 (\1)', text, flags=re.DOTALL)
+    # Strip remaining HTML tags
+    cleaned = re.sub(r'<[^>]+>', '', converted)
+    # Unescape HTML entities
+    return html.unescape(cleaned).strip()
+
+
 def clean_and_format_for_telegram(text: str) -> str:
     """
     Transforms LLM output (markdown, headers, html tags) into clean,
@@ -47,7 +83,7 @@ def clean_and_format_for_telegram(text: str) -> str:
         line = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"<i>\1</i>", line)
 
         # 6. Convert markdown links [Anchor](http://...) to <a href="...">Anchor</a>
-        line = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r'<a href="\2">\1</a>', line)
+        line = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', line)
 
         # 7. Clean up markdown horizontal dividers (---, ___)
         if re.match(r"^[-*_]{3,}$", stripped):
@@ -60,7 +96,9 @@ def clean_and_format_for_telegram(text: str) -> str:
 
     # Condense excess blank lines
     result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
+
+    # Sanitize entities so Telegram HTML engine never throws 400 Bad Request
+    return sanitize_telegram_html(result.strip())
 
 
 def chunk_message(text: str, max_chars: int = 3900) -> List[str]:

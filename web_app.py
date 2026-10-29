@@ -22,7 +22,7 @@ from agent.config import (
 )
 from agent.workflow import generate_newsletter
 from bot.telegram_bot import create_bot_application
-from bot.formatter import clean_and_format_for_telegram, chunk_message
+from bot.formatter import clean_and_format_for_telegram, chunk_message, html_to_plain_text_with_links
 
 logger = logging.getLogger("news_agent.web")
 logging.basicConfig(level=logging.INFO)
@@ -128,8 +128,9 @@ async def trigger_daily_digest(
                         parse_mode=ParseMode.HTML,
                         disable_web_page_preview=True
                     )
-                except Exception:
-                    plain = re.sub(r"<[^>]+>", "", chunk)
+                except Exception as e:
+                    logger.warning(f"Telegram HTML send failed ({e}), using plaintext with preserved links")
+                    plain = html_to_plain_text_with_links(chunk)
                     await telegram_app.bot.send_message(chat_id=chat_id, text=plain)
             
             results.append({"chat_id": chat_id, "status": "delivered"})

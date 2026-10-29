@@ -128,15 +128,16 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
             "Feel free to ask me questions about today's earlier news or use <code>/reset_history</code> to test from scratch!"
         )
 
-    # Select top 5-6 articles and condense snippets to keep token usage well under 1,000 tokens!
+    # Select top 5-6 articles with rich metadata and full URLs
     selected_articles = fresh_articles[:6]
     articles_text = []
     for i, a in enumerate(selected_articles, 1):
-        clean_summary = (a.get("summary") or "").strip()[:180]
+        clean_summary = (a.get("summary") or "").strip()[:240]
         articles_text.append(
-            f"[{i}] {a['title']}\n"
-            f"    Source: {a['source']} | URL: {a['url']}\n"
-            f"    Snippet: {clean_summary}...\n"
+            f"[{i}] Title: {a['title']}\n"
+            f"    Source: {a['source']} | Author: {a.get('writer', 'Staff')}\n"
+            f"    URL: {a['url']}\n"
+            f"    Summary: {clean_summary}...\n"
         )
     
     current_date = datetime.now().strftime("%B %d, %Y")
