@@ -39,17 +39,20 @@ def get_resilient_llm():
     primary_20b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-20b",
-        temperature=0.3
+        temperature=0.3,
+        max_retries=0
     )
     fallback_qwen = ChatGroq(
         api_key=GROQ_API_KEY,
         model="qwen/qwen3.8-27b",
-        temperature=0.3
+        temperature=0.3,
+        max_retries=0
     )
     fallback_120b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-120b",
-        temperature=0.3
+        temperature=0.3,
+        max_retries=1
     )
 
     return primary_20b.with_fallbacks([fallback_qwen, fallback_120b])
@@ -63,9 +66,16 @@ llm_with_tools = llm.bind_tools(AGENT_TOOLS)
 # 3. Graph Nodes
 # -----------------------------------------------------------------------------
 def call_model(state: AgentState) -> Dict[str, Any]:
-    messages = state["messages"]
-    if not messages or not isinstance(messages[0], SystemMessage):
-        messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)] + list(messages)
+    raw_messages = list(state["messages"])
+    
+    # Maintain a sliding window of the last 6 conversational messages to stay under TPM limits
+    windowed_messages = raw_messages[-6:] if len(raw_messages) > 6 else raw_messages
+    
+    # Always ensure system prompt leads the context
+    if not windowed_messages or not isinstance(windowed_messages[0], SystemMessage):
+        messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)] + windowed_messages
+    else:
+        messages = windowed_messages
     
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
@@ -146,14 +156,16 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
 
     if chat_id:
         config = {"configurable": {"thread_id": str(chat_id)}}
-        agent_graph.invoke(
+        # Efficiently save delivery memory directly into checkpointer without triggering an extra LLM call
+        delivered_titles = ", ".join([f"'{a['title']}'" for a in selected_articles[:4]])
+        agent_graph.update_state(
+            config,
             {
                 "messages": [
-                    HumanMessage(content="Here is today's morning newsletter digest that was sent to the user."),
-                    AIMessage(content=newsletter_text)
+                    AIMessage(content=f"Delivered morning digest on {current_date} covering: {delivered_titles}.")
                 ]
             },
-            config=config
+            as_node="agent"
         )
 
     return newsletter_text

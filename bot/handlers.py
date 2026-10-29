@@ -108,8 +108,8 @@ async def reset_history_command(update: Update, context: ContextTypes.DEFAULT_TY
     conn = get_connection()
     try:
         with conn:
-            conn.execute("DELETE FROM delivered_news WHERE telegram_chat_id = ? OR telegram_chat_id IS NULL", (chat_id,))
-        await update.message.reply_text("🔄 <b>Delivered news history cleared!</b> You can now send <code>/digest</code> to get a complete briefing again.", parse_mode=ParseMode.HTML)
+            conn.execute("DELETE FROM delivered_news")
+        await update.message.reply_text("🔄 <b>Delivered news history cleared!</b> You can now send <code>/digest</code> to get a fresh briefing.", parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error clearing history: {e}")
         await update.message.reply_text(f"⚠️ Error resetting history: {e}")
@@ -118,7 +118,20 @@ async def reset_history_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧹 <b>Memory refreshed!</b> Starting a new conversation context.", parse_mode=ParseMode.HTML)
+    """Wipes conversational checkpoints for the current user to eliminate accumulated token context."""
+    chat_id = update.effective_chat.id
+    try:
+        import sqlite3
+        from agent.config import MEMORY_DB_PATH
+        conn = sqlite3.connect(MEMORY_DB_PATH)
+        with conn:
+            conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (str(chat_id),))
+            conn.execute("DELETE FROM writes WHERE thread_id = ?", (str(chat_id),))
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Note on clearing memory: {e}")
+
+    await update.message.reply_text("🧹 <b>Conversation memory refreshed!</b> Fresh token window active.", parse_mode=ParseMode.HTML)
 
 
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
