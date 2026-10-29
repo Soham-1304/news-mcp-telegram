@@ -40,18 +40,21 @@ def get_resilient_llm():
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-20b",
         temperature=0.3,
+        max_tokens=4096,
         max_retries=0
     )
     fallback_qwen = ChatGroq(
         api_key=GROQ_API_KEY,
         model="qwen/qwen3.8-27b",
         temperature=0.3,
+        max_tokens=4096,
         max_retries=0
     )
     fallback_120b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-120b",
         temperature=0.3,
+        max_tokens=4096,
         max_retries=1
     )
 
