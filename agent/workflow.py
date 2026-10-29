@@ -33,16 +33,35 @@ class AgentState(TypedDict):
 
 
 # -----------------------------------------------------------------------------
-# 2. LLM & Tools Setup
+# 2. LLM Setup with Automatic Fallbacks for Rate Limits (429)
 # -----------------------------------------------------------------------------
-def get_llm():
-    return ChatGroq(
+def get_resilient_llm():
+    """
+    Returns an LLM pipeline with automatic failover across Groq models:
+    Primary:    openai/gpt-oss-120b
+    Fallback 1: qwen/qwen3.8-27b (Fast & high token limits)
+    Fallback 2: openai/gpt-oss-20b (Extremely lightweight)
+    """
+    primary = ChatGroq(
         api_key=GROQ_API_KEY,
-        model=DEFAULT_MODEL,
+        model=DEFAULT_MODEL or "openai/gpt-oss-120b",
+        temperature=0.3
+    )
+    fallback_qwen = ChatGroq(
+        api_key=GROQ_API_KEY,
+        model="qwen/qwen3.8-27b",
+        temperature=0.3
+    )
+    fallback_20b = ChatGroq(
+        api_key=GROQ_API_KEY,
+        model="openai/gpt-oss-20b",
         temperature=0.3
     )
 
-llm = get_llm()
+    return primary.with_fallbacks([fallback_qwen, fallback_20b])
+
+
+llm = get_resilient_llm()
 llm_with_tools = llm.bind_tools(AGENT_TOOLS)
 
 
@@ -51,7 +70,6 @@ llm_with_tools = llm.bind_tools(AGENT_TOOLS)
 # -----------------------------------------------------------------------------
 def call_model(state: AgentState) -> Dict[str, Any]:
     messages = state["messages"]
-    # If first message is not a system message, prepend CHAT_SYSTEM_PROMPT
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)] + list(messages)
     
@@ -79,36 +97,33 @@ def build_agent_graph():
     return builder.compile(checkpointer=checkpointer), checkpointer
 
 
-# Global compiled graph
 agent_graph, memory_checkpointer = build_agent_graph()
 
 
 # -----------------------------------------------------------------------------
 # 5. High-Level Agent API
 # -----------------------------------------------------------------------------
-def generate_newsletter(chat_id: int = None, force_refresh: bool = False) -> str:
+def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs) -> str:
     """
-    Executes the daily news briefing handshake:
-    1. Fetches raw news from DeepLearning.AI, The Guardian, MIT, TechCrunch.
-    2. Runs Deduplication & Freshness filtering against SQLite (exact + metadata + fuzzy).
-    3. Synthesizes a structured morning newsletter with LLM.
-    4. Commits delivered articles to SQLite to prevent future duplication.
-    5. Injects the newsletter into the user's LangGraph conversation memory for seamless follow-up questions.
+    Executes daily news briefing:
+    1. Runs progressive crawl loop with SQLite deduplication.
+    2. Synthesizes a structured morning newsletter.
+    3. Commits delivered articles to SQLite.
+    4. Injects briefing into user's LangGraph memory.
     """
-    logger.info(f"Generating newsletter for chat_id={chat_id} (force_refresh={force_refresh})")
+    logger.info(f"Generating newsletter for chat_id={chat_id}")
     
-    fresh_articles, rejected = get_fresh_articles_for_digest(chat_id=chat_id, limit_per_source=4)
+    fresh_articles, rejected = get_fresh_articles_for_digest(chat_id=chat_id, limit_per_source=limit_per_source)
     
     if not fresh_articles:
         return (
-            "✨ *All Caught Up!*\n\n"
-            "You have already received the latest news from DeepLearning.AI, The Guardian, "
-            "MIT Technology Review, and TechCrunch AI within the last 48 hours.\n\n"
+            "✨ <b>All Caught Up!</b>\n\n"
+            "You have already received the latest news from In The World of AI, DeepLearning.AI, The Guardian, "
+            "MIT Technology Review, and TechCrunch AI.\n\n"
             "Our deduplication filter prevented repeating any previously delivered stories.\n"
-            "Feel free to ask me questions about today's earlier news or use `/news <topic>` to explore specific topics!"
+            "Feel free to ask me questions about today's earlier news or search for specific topics!"
         )
 
-    # Format articles for prompt
     articles_text = []
     for i, a in enumerate(fresh_articles, 1):
         articles_text.append(
@@ -125,18 +140,15 @@ def generate_newsletter(chat_id: int = None, force_refresh: bool = False) -> str
         articles_text="\n".join(articles_text)
     )
 
-    # Invoke LLM for synthesis
-    compiler_llm = get_llm()
+    compiler_llm = get_resilient_llm()
     response = compiler_llm.invoke([
-        SystemMessage(content="You are a professional AI news editor. Output crisp, high-signal Telegram newsletter text."),
+        SystemMessage(content="You are a professional AI news editor. Output clean, high-signal Telegram newsletter text."),
         HumanMessage(content=formatted_prompt)
     ])
     newsletter_text = response.content
 
-    # Commit sent articles to SQLite database
     record_delivered_articles(fresh_articles, chat_id=chat_id)
 
-    # Inject into LangGraph memory state so user can ask follow-up questions
     if chat_id:
         config = {"configurable": {"thread_id": str(chat_id)}}
         agent_graph.invoke(
@@ -154,7 +166,7 @@ def generate_newsletter(chat_id: int = None, force_refresh: bool = False) -> str
 
 def chat_with_agent(chat_id: int, user_message: str) -> str:
     """
-    Handles user chat and follow-up questions with full conversational memory.
+    Handles user chat, topic queries, and follow-ups with full conversational memory.
     """
     config = {"configurable": {"thread_id": str(chat_id)}}
     inputs = {"messages": [HumanMessage(content=user_message)]}
@@ -166,5 +178,4 @@ def chat_with_agent(chat_id: int, user_message: str) -> str:
         if isinstance(msg, AIMessage) and msg.content:
             return msg.content
             
-    return "I processed your request, but have no additional output. How else can I assist you with the news?"
-
+    return "I processed your request, but found no matching news reports. What specific topic would you like to search?"

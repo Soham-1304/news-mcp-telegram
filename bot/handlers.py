@@ -11,11 +11,21 @@ from bot.formatter import clean_and_format_for_telegram, chunk_message
 
 logger = logging.getLogger("news_agent.bot.handlers")
 
-# Regex pattern to catch user requests asking for more / latest news
-MORE_NEWS_INTENT_PATTERN = re.compile(
-    r"\b(find\s+more\s+news|more\s+news|get\s+more\s+news|give\s+me\s+news|latest\s+news|today'?s\s+news|show\s+more\s+news|another\s+digest|new\s+news|what'?s\s+the\s+news)\b",
-    re.IGNORECASE
-)
+# Standalone phrases that mean "give me the general morning briefing" without a specific topic
+STANDALONE_DIGEST_PHRASES = {
+    "more news",
+    "find more news",
+    "give me more news",
+    "show more news",
+    "daily news",
+    "daily digest",
+    "daily briefing",
+    "morning digest",
+    "morning briefing",
+    "today's news",
+    "todays news",
+    "news digest",
+}
 
 
 async def send_formatted_message(update: Update, text: str, reply_to_message: bool = False):
@@ -51,17 +61,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.bot_data["subscribed_chats"].add(chat_id)
 
     welcome_text = (
-        f"👋 <b>Welcome, {user.first_name}!</b> I am <b>Techno</b>, your autonomous AI & Tech News Agent.\n\n"
+        f"👋 <b>Welcome, {user.first_name}!</b> I am <b>Techno</b>, your AI & Tech News Intelligence Agent.\n\n"
         f"📡 <b>What I do:</b>\n"
-        f"• Aggregate curated news from <b>In The World of AI</b>, <b>DeepLearning.AI</b>, <b>The Guardian</b>, <b>MIT Technology Review</b>, and <b>TechCrunch AI</b>.\n"
+        f"• Track <b>In The World of AI</b>, <b>DeepLearning.AI</b>, <b>The Guardian</b>, <b>MIT Technology Review</b>, and <b>TechCrunch AI</b>.\n"
         f"• Run an intelligent <b>SQLite Deduplication & Fuzzy Matching</b> handshake so you never see repeat stories.\n"
         f"• Deliver a crisp intelligence briefing every morning at <b>{SCHEDULE_TIME} ({SCHEDULE_TIMEZONE})</b>.\n"
-        f"• Answer follow-up questions with full conversational memory!\n\n"
-        f"⚡ <b>Quick Commands:</b>\n"
-        f"• <code>/digest</code> or <code>/news</code> - Get a fresh news briefing right now\n"
+        f"• Answer questions on specific topics (e.g. <i>'What are Google Q3 earnings?'</i> or <i>'Tell me about Gemini 4 Carbon'</i>)!\n\n"
+        f"⚡ <b>Commands:</b>\n"
+        f"• <code>/digest</code> or <code>/news</code> - Get today's general briefing\n"
         f"• <code>/search &lt;topic&gt;</code> - Search news across all sources\n"
         f"• <code>/clear</code> - Reset conversation memory\n"
-        f"• Or simply ask me anything like <i>'find more news'</i> or <i>'explain the first story'</i>!"
+        f"• Or simply <b>ask me any question</b> directly!"
     )
     await send_formatted_message(update, welcome_text)
 
@@ -104,13 +114,18 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for freeform messages, follow-up questions, and auto-detecting 'find more news' intent."""
+    """
+    Handler for all user text messages.
+    - If user explicitly sends a standalone 'more news' / 'daily digest' phrase without topic, triggers general digest.
+    - Otherwise, routes to LangGraph Agent which uses search tools to answer specifically about the topic requested!
+    """
     chat_id = update.effective_chat.id
     user_text = (update.message.text or "").strip()
+    norm_text = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
     
-    # 1. Intent Detection: If the user is asking for more/new news, trigger the digest generator directly!
-    if MORE_NEWS_INTENT_PATTERN.search(user_text):
-        logger.info(f"Detected 'more news' intent from user message: '{user_text}'")
+    # 1. Standalone general digest request (strictly without specific topic)
+    if norm_text in STANDALONE_DIGEST_PHRASES:
+        logger.info(f"Triggering general digest for standalone phrase: '{norm_text}'")
         status_msg = await update.message.reply_text("🔄 <i>Digging deeper to find newer, unread stories for you...</i>", parse_mode=ParseMode.HTML)
         try:
             newsletter = generate_newsletter(chat_id=chat_id)
@@ -122,7 +137,7 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await status_msg.edit_text(f"⚠️ Could not fetch more news: {e}")
             return
 
-    # 2. Conversational Q&A / Follow-up mode
+    # 2. Conversational Q&A / Targeted topic request
     await update.effective_chat.send_action("typing")
     try:
         reply = chat_with_agent(chat_id=chat_id, user_message=user_text)
