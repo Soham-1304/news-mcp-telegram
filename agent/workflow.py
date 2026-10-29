@@ -33,18 +33,18 @@ class AgentState(TypedDict):
 
 
 # -----------------------------------------------------------------------------
-# 2. LLM Setup with Automatic Fallbacks for Rate Limits (429)
+# 2. LLM Setup with Priority: 20b -> 27b -> 120b
 # -----------------------------------------------------------------------------
 def get_resilient_llm():
     """
-    Returns an LLM pipeline with automatic failover across Groq models:
-    Primary:    openai/gpt-oss-120b
-    Fallback 1: qwen/qwen3.8-27b (Fast & high token limits)
-    Fallback 2: openai/gpt-oss-20b (Extremely lightweight)
+    Returns an LLM pipeline with priority order:
+    1. Primary:    openai/gpt-oss-20b (Ultra-fast, high rate-limit tolerance)
+    2. Fallback 1: qwen/qwen3.8-27b   (High capability & throughput)
+    3. Fallback 2: openai/gpt-oss-120b (Heavyweight foundation model)
     """
-    primary = ChatGroq(
+    primary_20b = ChatGroq(
         api_key=GROQ_API_KEY,
-        model=DEFAULT_MODEL or "openai/gpt-oss-120b",
+        model="openai/gpt-oss-20b",
         temperature=0.3
     )
     fallback_qwen = ChatGroq(
@@ -52,13 +52,13 @@ def get_resilient_llm():
         model="qwen/qwen3.8-27b",
         temperature=0.3
     )
-    fallback_20b = ChatGroq(
+    fallback_120b = ChatGroq(
         api_key=GROQ_API_KEY,
-        model="openai/gpt-oss-20b",
+        model="openai/gpt-oss-120b",
         temperature=0.3
     )
 
-    return primary.with_fallbacks([fallback_qwen, fallback_20b])
+    return primary_20b.with_fallbacks([fallback_qwen, fallback_120b])
 
 
 llm = get_resilient_llm()
