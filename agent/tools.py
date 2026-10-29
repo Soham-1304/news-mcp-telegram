@@ -26,31 +26,57 @@ deduplicator = NewsDeduplicator(
     fuzzy_threshold=FUZZY_MATCH_THRESHOLD
 )
 
-# Standard tool aliases for bot handlers
 search_news_tool = search_news_remote
 read_article_tool = read_article_remote
 get_source_news_tool = get_source_news_remote
 
 
-def get_fresh_articles_for_digest(chat_id: int = None, limit_per_source: int = 4) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def get_fresh_articles_for_digest(
+    chat_id: int = None,
+    target_count: int = 5,
+    max_iter: int = 3
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Decoupled Handshake:
-    1. Makes an RPC call over the network (SSE) to the standalone MCP Server.
-    2. Receives raw serialized headlines.
-    3. Runs SQLite deduplication & freshness filtering.
+    Progressive Deep-Fetch Handshake Loop:
+    If the top articles have already been delivered to this user,
+    iteratively increases crawl depth (up to max_iter=3) to find unread, fresh stories.
     """
-    try:
-        logger.info("Calling standalone MCP Server tool 'get_daily_headlines' over protocol...")
-        raw_json = mcp_client.call_tool_sync("get_daily_headlines", {"limit_per_source": limit_per_source})
-        raw_articles = json.loads(raw_json)
-    except Exception as e:
-        logger.warning(f"Remote MCP server call failed ({e}). Falling back to direct source manager.")
-        from mcp_server.sources.manager import NewsSourceManager
-        mgr = NewsSourceManager(cache_ttl_seconds=300)
-        raw_articles = [a.to_dict() for a in mgr.get_all_latest_articles(limit_per_source=limit_per_source)]
+    fresh_accumulated = []
+    rejected_accumulated = []
+    
+    # Progressively deeper limits: 4 -> 8 -> 15 articles per source
+    depth_tiers = [4, 8, 15]
 
-    fresh, rejected = deduplicator.filter_fresh_and_unique(raw_articles, chat_id=chat_id)
-    return fresh, rejected
+    for iteration in range(min(max_iter, len(depth_tiers))):
+        current_limit = depth_tiers[iteration]
+        logger.info(f"Deduplication loop iter {iteration + 1}/{max_iter} (depth={current_limit} per source)...")
+        
+        try:
+            raw_json = mcp_client.call_tool_sync("get_daily_headlines", {"limit_per_source": current_limit})
+            raw_articles = json.loads(raw_json)
+        except Exception as e:
+            logger.warning(f"Remote MCP call failed ({e}). Falling back to local manager.")
+            from mcp_server.sources.manager import NewsSourceManager
+            mgr = NewsSourceManager(cache_ttl_seconds=300)
+            raw_articles = [a.to_dict() for a in mgr.get_all_latest_articles(limit_per_source=current_limit)]
+
+        fresh, rejected = deduplicator.filter_fresh_and_unique(raw_articles, chat_id=chat_id)
+        
+        # Merge newly discovered fresh articles
+        existing_urls = {a["url"] for a in fresh_accumulated}
+        for f in fresh:
+            if f["url"] not in existing_urls:
+                fresh_accumulated.append(f)
+                existing_urls.add(f["url"])
+
+        rejected_accumulated.extend(rejected)
+
+        # If we have enough fresh unread articles for a solid briefing, stop early!
+        if len(fresh_accumulated) >= target_count:
+            logger.info(f"Found {len(fresh_accumulated)} fresh articles at iteration {iteration + 1}. Proceeding.")
+            break
+
+    return fresh_accumulated, rejected_accumulated
 
 
 def record_delivered_articles(articles: List[Dict[str, Any]], chat_id: int = None) -> None:
@@ -58,5 +84,4 @@ def record_delivered_articles(articles: List[Dict[str, Any]], chat_id: int = Non
     deduplicator.record_delivered(articles, chat_id=chat_id)
 
 
-# Tools exposed to the LangGraph LLM Agent
 AGENT_TOOLS = REMOTE_MCP_TOOLS
