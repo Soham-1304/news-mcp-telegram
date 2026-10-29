@@ -8,12 +8,16 @@ if PROJECT_ROOT not in sys.path:
 
 from mcp_server.server import mcp
 
-# Starlette ASGI application exposing /sse for remote clients
-app = mcp.sse_app()
+# Allow cloud host headers (Render, Railway, etc.)
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    app = mcp.sse_app(transport_security=security)
+except Exception:
+    app = mcp.sse_app()
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8001))
     print(f"📡 Starting Standalone MCP Server on http://0.0.0.0:{port}/sse ...")
     uvicorn.run(app, host="0.0.0.0", port=port)
-
