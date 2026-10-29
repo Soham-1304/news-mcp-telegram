@@ -33,15 +33,9 @@ class AgentState(TypedDict):
 
 
 # -----------------------------------------------------------------------------
-# 2. LLM Setup with Priority: 20b -> 27b -> 120b
+# 2. LLM Setup with Priority: 20b -> 27b -> 120b (Ultra-resilient)
 # -----------------------------------------------------------------------------
 def get_resilient_llm():
-    """
-    Returns an LLM pipeline with priority order:
-    1. Primary:    openai/gpt-oss-20b (Ultra-fast, high rate-limit tolerance)
-    2. Fallback 1: qwen/qwen3.8-27b   (High capability & throughput)
-    3. Fallback 2: openai/gpt-oss-120b (Heavyweight foundation model)
-    """
     primary_20b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-20b",
@@ -101,15 +95,15 @@ agent_graph, memory_checkpointer = build_agent_graph()
 
 
 # -----------------------------------------------------------------------------
-# 5. High-Level Agent API
+# 5. High-Level Agent API (Token-Optimized to prevent 429 Rate Limits)
 # -----------------------------------------------------------------------------
 def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs) -> str:
     """
     Executes daily news briefing:
     1. Runs progressive crawl loop with SQLite deduplication.
-    2. Synthesizes a structured morning newsletter.
-    3. Commits delivered articles to SQLite.
-    4. Injects briefing into user's LangGraph memory.
+    2. Selects top 5-6 fresh, unread articles with condensed snippets (<1000 tokens).
+    3. Synthesizes a structured morning newsletter without exhausting TPM limits.
+    4. Commits delivered articles to SQLite.
     """
     logger.info(f"Generating newsletter for chat_id={chat_id}")
     
@@ -121,17 +115,18 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
             "You have already received the latest news from In The World of AI, DeepLearning.AI, The Guardian, "
             "MIT Technology Review, and TechCrunch AI.\n\n"
             "Our deduplication filter prevented repeating any previously delivered stories.\n"
-            "Feel free to ask me questions about today's earlier news or search for specific topics!"
+            "Feel free to ask me questions about today's earlier news or use <code>/reset_history</code> to test from scratch!"
         )
 
+    # Select top 5-6 articles and condense snippets to keep token usage well under 1,000 tokens!
+    selected_articles = fresh_articles[:6]
     articles_text = []
-    for i, a in enumerate(fresh_articles, 1):
+    for i, a in enumerate(selected_articles, 1):
+        clean_summary = (a.get("summary") or "").strip()[:180]
         articles_text.append(
-            f"[{i}] Title: {a['title']}\n"
-            f"    Source: {a['source']} | Author: {a.get('writer', 'Staff')}\n"
-            f"    Published: {a.get('published_at', 'Recent')} | Category: {a.get('topic', 'AI')}\n"
-            f"    URL: {a['url']}\n"
-            f"    Summary: {a.get('summary', '')}\n"
+            f"[{i}] {a['title']}\n"
+            f"    Source: {a['source']} | URL: {a['url']}\n"
+            f"    Snippet: {clean_summary}...\n"
         )
     
     current_date = datetime.now().strftime("%B %d, %Y")
@@ -147,7 +142,7 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
     ])
     newsletter_text = response.content
 
-    record_delivered_articles(fresh_articles, chat_id=chat_id)
+    record_delivered_articles(selected_articles, chat_id=chat_id)
 
     if chat_id:
         config = {"configurable": {"thread_id": str(chat_id)}}

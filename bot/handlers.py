@@ -8,10 +8,10 @@ from agent.workflow import generate_newsletter, chat_with_agent
 from agent.tools import search_news_tool
 from agent.config import SCHEDULE_TIME, SCHEDULE_TIMEZONE
 from bot.formatter import clean_and_format_for_telegram, chunk_message
+from storage.database import get_connection
 
 logger = logging.getLogger("news_agent.bot.handlers")
 
-# Standalone phrases that mean "give me the general morning briefing" without a specific topic
 STANDALONE_DIGEST_PHRASES = {
     "more news",
     "find more news",
@@ -29,10 +29,6 @@ STANDALONE_DIGEST_PHRASES = {
 
 
 async def send_formatted_message(update: Update, text: str, reply_to_message: bool = False):
-    """
-    Formats text into clean, beautiful Telegram HTML (converting headers, bullets, links)
-    and delivers it chunked safely within Telegram's 4096 character limits.
-    """
     clean_html = clean_and_format_for_telegram(text)
     chunks = chunk_message(clean_html, max_chars=3900)
 
@@ -52,7 +48,6 @@ async def send_formatted_message(update: Update, text: str, reply_to_message: bo
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /start command."""
     user = update.effective_user
     chat_id = update.effective_chat.id
     
@@ -70,6 +65,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚡ <b>Commands:</b>\n"
         f"• <code>/digest</code> or <code>/news</code> - Get today's general briefing\n"
         f"• <code>/search &lt;topic&gt;</code> - Search news across all sources\n"
+        f"• <code>/reset_history</code> - Clear seen news history (for testing)\n"
         f"• <code>/clear</code> - Reset conversation memory\n"
         f"• Or simply <b>ask me any question</b> directly!"
     )
@@ -77,7 +73,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /digest or /news command."""
     chat_id = update.effective_chat.id
     status_msg = await update.message.reply_text("🔄 <i>Gathering and synthesizing fresh intelligence...</i>", parse_mode=ParseMode.HTML)
     
@@ -91,7 +86,6 @@ async def digest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /search <topic> command."""
     if not context.args:
         await update.message.reply_text("⚠️ Please provide a query, e.g.: <code>/search reasoning models</code>", parse_mode=ParseMode.HTML)
         return
@@ -108,22 +102,30 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Search error: {e}")
 
 
+async def reset_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resets delivered news SQLite records so user can re-trigger briefing immediately."""
+    chat_id = update.effective_chat.id
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM delivered_news WHERE telegram_chat_id = ? OR telegram_chat_id IS NULL", (chat_id,))
+        await update.message.reply_text("🔄 <b>Delivered news history cleared!</b> You can now send <code>/digest</code> to get a complete briefing again.", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error clearing history: {e}")
+        await update.message.reply_text(f"⚠️ Error resetting history: {e}")
+    finally:
+        conn.close()
+
+
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler for /clear command to reset conversational memory."""
     await update.message.reply_text("🧹 <b>Memory refreshed!</b> Starting a new conversation context.", parse_mode=ParseMode.HTML)
 
 
 async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handler for all user text messages.
-    - If user explicitly sends a standalone 'more news' / 'daily digest' phrase without topic, triggers general digest.
-    - Otherwise, routes to LangGraph Agent which uses search tools to answer specifically about the topic requested!
-    """
     chat_id = update.effective_chat.id
     user_text = (update.message.text or "").strip()
     norm_text = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
     
-    # 1. Standalone general digest request (strictly without specific topic)
     if norm_text in STANDALONE_DIGEST_PHRASES:
         logger.info(f"Triggering general digest for standalone phrase: '{norm_text}'")
         status_msg = await update.message.reply_text("🔄 <i>Digging deeper to find newer, unread stories for you...</i>", parse_mode=ParseMode.HTML)
@@ -137,7 +139,6 @@ async def handle_chat_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await status_msg.edit_text(f"⚠️ Could not fetch more news: {e}")
             return
 
-    # 2. Conversational Q&A / Targeted topic request
     await update.effective_chat.send_action("typing")
     try:
         reply = chat_with_agent(chat_id=chat_id, user_message=user_text)
