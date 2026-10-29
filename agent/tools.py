@@ -33,19 +33,21 @@ get_source_news_tool = get_source_news_remote
 
 def get_fresh_articles_for_digest(
     chat_id: int = None,
+    limit_per_source: int = 4,
     target_count: int = 5,
-    max_iter: int = 3
+    max_iter: int = 3,
+    **kwargs
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Progressive Deep-Fetch Handshake Loop:
-    If the top articles have already been delivered to this user,
+    If top articles have already been delivered to this user,
     iteratively increases crawl depth (up to max_iter=3) to find unread, fresh stories.
     """
     fresh_accumulated = []
     rejected_accumulated = []
     
-    # Progressively deeper limits: 4 -> 8 -> 15 articles per source
-    depth_tiers = [4, 8, 15]
+    # Progressively deeper limits: e.g. 4 -> 8 -> 16
+    depth_tiers = [limit_per_source, limit_per_source * 2, limit_per_source * 4]
 
     for iteration in range(min(max_iter, len(depth_tiers))):
         current_limit = depth_tiers[iteration]
@@ -71,7 +73,7 @@ def get_fresh_articles_for_digest(
 
         rejected_accumulated.extend(rejected)
 
-        # If we have enough fresh unread articles for a solid briefing, stop early!
+        # If we have enough fresh unread articles for a solid briefing, stop early
         if len(fresh_accumulated) >= target_count:
             logger.info(f"Found {len(fresh_accumulated)} fresh articles at iteration {iteration + 1}. Proceeding.")
             break

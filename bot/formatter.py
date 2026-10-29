@@ -81,3 +81,4 @@ def chunk_message(text: str, max_chars: int = 3900) -> List[str]:
     if curr.strip():
         chunks.append(curr.strip())
     return chunks
+
