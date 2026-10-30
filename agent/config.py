@@ -16,7 +16,7 @@ DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "openai/gpt-oss-20b")
 
 # Telegram Bot Configurations
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8730943627")
 
 # Schedule Settings
 SCHEDULE_TIME = os.getenv("SCHEDULE_TIME", "07:00")

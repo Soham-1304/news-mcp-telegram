@@ -59,8 +59,48 @@ def initialize_db(db_path: Optional[str] = None) -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_delivered_hash ON delivered_news (content_hash);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_delivered_source_date ON delivered_news (source, published_at);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_delivered_chat ON delivered_news (telegram_chat_id);")
+
+            # Persistent subscriber registry (survives container restarts)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscribers (
+                    chat_id INTEGER PRIMARY KEY,
+                    subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            # Auto-seed primary user chat ID
+            conn.execute("INSERT OR IGNORE INTO subscribers (chat_id) VALUES (8730943627);")
             
         logger.info("Delivered news database initialized successfully.")
+    finally:
+        conn.close()
+
+
+def add_subscriber(chat_id: int, db_path: Optional[str] = None) -> None:
+    """Registers a chat ID in SQLite so cron delivery persists across server reboots."""
+    if not chat_id:
+        return
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute("INSERT OR IGNORE INTO subscribers (chat_id) VALUES (?);", (int(chat_id),))
+    except Exception as e:
+        logger.error(f"Error registering subscriber {chat_id}: {e}")
+    finally:
+        conn.close()
+
+
+def get_subscribers(db_path: Optional[str] = None) -> list:
+    """Retrieves all registered subscriber chat IDs."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute("SELECT chat_id FROM subscribers;").fetchall()
+        subscribers = [int(r["chat_id"]) for r in rows if r["chat_id"]]
+        if not subscribers:
+            subscribers = [8730943627]
+        return subscribers
+    except Exception as e:
+        logger.error(f"Error fetching subscribers: {e}")
+        return [8730943627]
     finally:
         conn.close()
 

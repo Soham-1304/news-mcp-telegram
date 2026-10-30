@@ -8,7 +8,7 @@ from agent.workflow import generate_newsletter, chat_with_agent
 from agent.tools import search_news_tool
 from agent.config import SCHEDULE_TIME, SCHEDULE_TIMEZONE
 from bot.formatter import clean_and_format_for_telegram, chunk_message, html_to_plain_text_with_links
-from storage.database import get_connection
+from storage.database import get_connection, add_subscriber
 
 logger = logging.getLogger("news_agent.bot.handlers")
 
@@ -51,6 +51,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = update.effective_chat.id
     
+    add_subscriber(chat_id)
     if "subscribed_chats" not in context.application.bot_data:
         context.application.bot_data["subscribed_chats"] = set()
     context.application.bot_data["subscribed_chats"].add(chat_id)

@@ -87,7 +87,7 @@ Configure your keys in `.env`:
 GROQ_API_KEY=gsk_...
 DEFAULT_MODEL=openai/gpt-oss-120b
 
-TELEGRAM_BOT_TOKEN=9020136598:AAFcP-j7aI5fEZVVgnXFNU-Ktnp0nF7Sx2k
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TELEGRAM_BOT_USERNAME=techn0o_bot
 
 SCHEDULE_TIME=07:00

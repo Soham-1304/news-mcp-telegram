@@ -4,16 +4,16 @@ import re
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Header, HTTPException, Response
+from fastapi import FastAPI, Request, Header, HTTPException, Response, BackgroundTasks
 from fastapi.responses import JSONResponse
-from telegram import Update
+from telegram import Update, Bot
 from telegram.constants import ParseMode
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from storage.database import initialize_db
+from storage.database import initialize_db, get_subscribers, add_subscriber
 from agent.config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
@@ -86,34 +86,19 @@ async def telegram_webhook(request: Request):
     return Response(status_code=200)
 
 
-@app.api_route("/cron/daily-digest", methods=["GET", "POST"])
-async def trigger_daily_digest(
-    x_cron_secret: str = Header(default="", alias="X-Cron-Secret")
-):
-    if CRON_SECRET and x_cron_secret and x_cron_secret != CRON_SECRET:
-        raise HTTPException(status_code=401, detail="Unauthorized cron trigger")
-
-    target_chat_id = None
+async def deliver_cron_digest_task():
+    """Background task to generate and deliver newsletter without blocking the HTTP response."""
+    subscribers = set(get_subscribers())
     if TELEGRAM_CHAT_ID:
         try:
-            target_chat_id = int(TELEGRAM_CHAT_ID)
+            subscribers.add(int(TELEGRAM_CHAT_ID))
         except ValueError:
             pass
-            
-    subscribed = set()
-    if telegram_app and "subscribed_chats" in telegram_app.bot_data:
-        subscribed.update(telegram_app.bot_data["subscribed_chats"])
-    if target_chat_id:
-        subscribed.add(target_chat_id)
 
-    if not subscribed:
-        return JSONResponse(
-            status_code=400,
-            content={"message": "No subscribed chat_id found. Message /start to the bot on Telegram first."}
-        )
+    bot = telegram_app.bot if (telegram_app and telegram_app.bot) else Bot(token=TELEGRAM_BOT_TOKEN)
 
-    results = []
-    for chat_id in subscribed:
+    logger.info(f"Cron Digest Task running for subscribers: {subscribers}")
+    for chat_id in subscribers:
         try:
             logger.info(f"Web Cron: Generating briefing for chat {chat_id}")
             newsletter = generate_newsletter(chat_id=chat_id)
@@ -122,7 +107,7 @@ async def trigger_daily_digest(
 
             for chunk in chunks:
                 try:
-                    await telegram_app.bot.send_message(
+                    await bot.send_message(
                         chat_id=chat_id,
                         text=chunk,
                         parse_mode=ParseMode.HTML,
@@ -131,11 +116,21 @@ async def trigger_daily_digest(
                 except Exception as e:
                     logger.warning(f"Telegram HTML send failed ({e}), using plaintext with preserved links")
                     plain = html_to_plain_text_with_links(chunk)
-                    await telegram_app.bot.send_message(chat_id=chat_id, text=plain)
-            
-            results.append({"chat_id": chat_id, "status": "delivered"})
+                    await bot.send_message(chat_id=chat_id, text=plain)
+
+            logger.info(f"Successfully delivered morning briefing to {chat_id}")
         except Exception as e:
             logger.error(f"Cron delivery failed for {chat_id}: {e}", exc_info=True)
-            results.append({"chat_id": chat_id, "status": "failed", "error": str(e)})
 
-    return {"message": "Cron digest executed", "deliveries": results}
+
+@app.api_route("/cron/daily-digest", methods=["GET", "POST"])
+async def trigger_daily_digest(
+    background_tasks: BackgroundTasks,
+    x_cron_secret: str = Header(default="", alias="X-Cron-Secret")
+):
+    if CRON_SECRET and x_cron_secret and x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized cron trigger")
+
+    # Queue execution immediately in background so cron-job.org gets an ultra-lightweight response
+    background_tasks.add_task(deliver_cron_digest_task)
+    return Response(content="OK", media_type="text/plain", status_code=200)
