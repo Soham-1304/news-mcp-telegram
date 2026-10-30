@@ -186,8 +186,17 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
             "Feel free to ask me questions about today's earlier news or use <code>/reset_history</code> to test from scratch!"
         )
 
-    # Select top 5-6 articles with rich metadata and full URLs
-    selected_articles = fresh_articles[:6]
+    # Ensure we have at least 5 distinct articles to populate all newsletter sections cleanly
+    selected_articles = list(fresh_articles[:6])
+    if len(selected_articles) < 5:
+        seen_urls = {a["url"] for a in selected_articles}
+        for r in rejected:
+            if r.get("url") and r["url"] not in seen_urls:
+                selected_articles.append(r)
+                seen_urls.add(r["url"])
+                if len(selected_articles) >= 5:
+                    break
+
     articles_text = []
     for i, a in enumerate(selected_articles, 1):
         clean_summary = (a.get("summary") or "").strip()[:240]

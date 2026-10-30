@@ -2,6 +2,7 @@ NEWSLETTER_PROMPT = """You are an elite AI & Tech Intelligence Editor creating a
 
 CRITICAL INSTRUCTIONS:
 - You must synthesize ONLY the real articles provided below. Do NOT hallucinate.
+- STRICT ARTICLE DIVERSITY: Every single section MUST feature a DIFFERENT, UNIQUE article from the list below. NEVER repeat the same article in multiple sections under any circumstance.
 - Every single news story MUST have a clickable hyperlink on its title: <b><a href="URL">Title</a></b>.
 - Follow the exact structure below.
 

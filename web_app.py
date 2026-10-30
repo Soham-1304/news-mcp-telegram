@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -86,41 +87,49 @@ async def telegram_webhook(request: Request):
     return Response(status_code=200)
 
 
+_cron_digest_lock = asyncio.Lock()
+
+
 async def deliver_cron_digest_task():
     """Background task to generate and deliver newsletter without blocking the HTTP response."""
-    subscribers = set(get_subscribers())
-    if TELEGRAM_CHAT_ID:
-        try:
-            subscribers.add(int(TELEGRAM_CHAT_ID))
-        except ValueError:
-            pass
+    if _cron_digest_lock.locked():
+        logger.info("Cron digest already executing, skipping duplicate execution.")
+        return
 
-    bot = telegram_app.bot if (telegram_app and telegram_app.bot) else Bot(token=TELEGRAM_BOT_TOKEN)
+    async with _cron_digest_lock:
+        subscribers = set(get_subscribers())
+        if TELEGRAM_CHAT_ID:
+            try:
+                subscribers.add(int(TELEGRAM_CHAT_ID))
+            except ValueError:
+                pass
 
-    logger.info(f"Cron Digest Task running for subscribers: {subscribers}")
-    for chat_id in subscribers:
-        try:
-            logger.info(f"Web Cron: Generating briefing for chat {chat_id}")
-            newsletter = generate_newsletter(chat_id=chat_id)
-            clean_html = clean_and_format_for_telegram(newsletter)
-            chunks = chunk_message(clean_html, max_chars=3900)
+        bot = telegram_app.bot if (telegram_app and telegram_app.bot) else Bot(token=TELEGRAM_BOT_TOKEN)
 
-            for chunk in chunks:
-                try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=chunk,
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True
-                    )
-                except Exception as e:
-                    logger.warning(f"Telegram HTML send failed ({e}), using plaintext with preserved links")
-                    plain = html_to_plain_text_with_links(chunk)
-                    await bot.send_message(chat_id=chat_id, text=plain)
+        logger.info(f"Cron Digest Task running for subscribers: {subscribers}")
+        for chat_id in subscribers:
+            try:
+                logger.info(f"Web Cron: Generating briefing for chat {chat_id}")
+                newsletter = generate_newsletter(chat_id=chat_id)
+                clean_html = clean_and_format_for_telegram(newsletter)
+                chunks = chunk_message(clean_html, max_chars=3900)
 
-            logger.info(f"Successfully delivered morning briefing to {chat_id}")
-        except Exception as e:
-            logger.error(f"Cron delivery failed for {chat_id}: {e}", exc_info=True)
+                for chunk in chunks:
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
+                    except Exception as e:
+                        logger.warning(f"Telegram HTML send failed ({e}), using plaintext with preserved links")
+                        plain = html_to_plain_text_with_links(chunk)
+                        await bot.send_message(chat_id=chat_id, text=plain)
+
+                logger.info(f"Successfully delivered morning briefing to {chat_id}")
+            except Exception as e:
+                logger.error(f"Cron delivery failed for {chat_id}: {e}", exc_info=True)
 
 
 @app.api_route("/cron/daily-digest", methods=["GET", "POST"])
