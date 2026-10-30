@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Annotated, Sequence, TypedDict, Dict, Any, List
 
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -12,6 +13,8 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agent.config import (
+    GOOGLE_API_KEY,
+    GEMINI_API_KEY,
     GROQ_API_KEY,
     DEFAULT_MODEL,
     MEMORY_DB_PATH
@@ -33,9 +36,34 @@ class AgentState(TypedDict):
 
 
 # -----------------------------------------------------------------------------
-# 2. LLM Setup with Priority: 20b -> 27b -> 120b (Ultra-resilient)
+# 2. Resilient LLM Setup (Gemini 3.5 Flash Lite Primary -> Groq Fallbacks)
 # -----------------------------------------------------------------------------
-def get_resilient_llm(max_tokens: int = 1024):
+def get_resilient_llm(max_tokens: int = 2048):
+    active_key = GOOGLE_API_KEY or GEMINI_API_KEY
+    if active_key:
+        primary_gemini = ChatGoogleGenerativeAI(
+            model=DEFAULT_MODEL or "gemini-3.5-flash-lite",
+            google_api_key=active_key,
+            temperature=0.3,
+            max_output_tokens=max_tokens
+        )
+        fallback_20b = ChatGroq(
+            api_key=GROQ_API_KEY,
+            model="openai/gpt-oss-20b",
+            temperature=0.3,
+            max_tokens=max_tokens,
+            max_retries=0
+        )
+        fallback_qwen = ChatGroq(
+            api_key=GROQ_API_KEY,
+            model="qwen/qwen3.8-27b",
+            temperature=0.3,
+            max_tokens=max_tokens,
+            max_retries=0
+        )
+        return primary_gemini.with_fallbacks([fallback_20b, fallback_qwen])
+
+    # Fallback to Groq stack if no Gemini key provided
     primary_20b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-20b",
@@ -57,11 +85,10 @@ def get_resilient_llm(max_tokens: int = 1024):
         max_tokens=max_tokens,
         max_retries=0
     )
-
     return primary_20b.with_fallbacks([fallback_qwen, fallback_120b])
 
 
-llm = get_resilient_llm(max_tokens=1024)
+llm = get_resilient_llm(max_tokens=2048)
 llm_with_tools = llm.bind_tools(AGENT_TOOLS)
 
 
@@ -218,7 +245,10 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
         SystemMessage(content="You are a professional AI news editor. Output clean, high-signal Telegram newsletter text."),
         HumanMessage(content=formatted_prompt)
     ])
-    newsletter_text = response.content
+    if isinstance(response.content, list):
+        newsletter_text = "".join([part.get("text", "") if isinstance(part, dict) else str(part) for part in response.content])
+    else:
+        newsletter_text = response.content
 
     record_delivered_articles(selected_articles, chat_id=chat_id)
 
@@ -253,7 +283,13 @@ def chat_with_agent(chat_id: int, user_message: str) -> str:
         
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
-                return msg.content
+                # Handle both string content and list of content parts from Gemini
+                if isinstance(msg.content, list):
+                    text = "".join([part.get("text", "") if isinstance(part, dict) else str(part) for part in msg.content])
+                    if text.strip():
+                        return text
+                elif isinstance(msg.content, str) and msg.content.strip():
+                    return msg.content
                 
         return "I searched today's news feeds, but found no matching reports. What specific topic would you like to explore?"
     except Exception as e:

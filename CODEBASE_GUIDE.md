@@ -136,3 +136,4 @@ Backed by SQLite databases in `data/` operating in high-performance **WAL (Write
 - `tests/test_pipeline.py`: Pytest unit test suite covering SQLite initialization, exact deduplication, RapidFuzz similarity matching, and HTML formatting.
 - `scripts/install_macos_service.sh`: Configures a macOS `launchd` plist daemon to run the bot 24/7 locally if desired.
 - `scripts/uninstall_macos_service.sh`: Removes the `launchd` daemon.
+

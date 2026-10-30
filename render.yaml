@@ -24,6 +24,12 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -m bot.main
     envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: DEFAULT_MODEL
+        value: "gemini-3.5-flash-lite"
       - key: GROQ_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
