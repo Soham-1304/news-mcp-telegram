@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Annotated, Sequence, TypedDict, Dict, Any, List
 
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -35,50 +35,105 @@ class AgentState(TypedDict):
 # -----------------------------------------------------------------------------
 # 2. LLM Setup with Priority: 20b -> 27b -> 120b (Ultra-resilient)
 # -----------------------------------------------------------------------------
-def get_resilient_llm():
+def get_resilient_llm(max_tokens: int = 1024):
     primary_20b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-20b",
         temperature=0.3,
-        max_tokens=4096,
+        max_tokens=max_tokens,
         max_retries=0
     )
     fallback_qwen = ChatGroq(
         api_key=GROQ_API_KEY,
         model="qwen/qwen3.8-27b",
         temperature=0.3,
-        max_tokens=4096,
+        max_tokens=max_tokens,
         max_retries=0
     )
     fallback_120b = ChatGroq(
         api_key=GROQ_API_KEY,
         model="openai/gpt-oss-120b",
         temperature=0.3,
-        max_tokens=4096,
-        max_retries=1
+        max_tokens=max_tokens,
+        max_retries=0
     )
 
     return primary_20b.with_fallbacks([fallback_qwen, fallback_120b])
 
 
-llm = get_resilient_llm()
+llm = get_resilient_llm(max_tokens=1024)
 llm_with_tools = llm.bind_tools(AGENT_TOOLS)
 
 
 # -----------------------------------------------------------------------------
 # 3. Graph Nodes
 # -----------------------------------------------------------------------------
+def clean_messages_for_llm(messages: Sequence[BaseMessage]) -> List[BaseMessage]:
+    """
+    Safely sanitizes conversational history for Groq/OpenAI tool calling:
+    1. Anchors to the last user HumanMessage.
+    2. Keeps previous turn's text exchange (if present) for conversational continuity.
+    3. Keeps tool calls paired with their matching ToolMessages.
+    4. Truncates tool content to 1,200 chars to prevent 413 Payload Too Large / 429 TPM limits.
+    5. Guarantees ToolMessage always has valid name attribute to prevent 'Tools should have a name' error.
+    """
+    if not messages:
+        return []
+
+    # Find the last HumanMessage
+    last_human_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            last_human_idx = i
+            break
+
+    if last_human_idx == -1:
+        last_human_idx = 0
+
+    # Collect previous turn's pure text messages (no tool dumps) for context
+    context_msgs: List[BaseMessage] = []
+    if last_human_idx > 0:
+        prev_slice = messages[max(0, last_human_idx - 3):last_human_idx]
+        for m in prev_slice:
+            if isinstance(m, HumanMessage):
+                context_msgs.append(m)
+            elif isinstance(m, AIMessage) and m.content and not getattr(m, "tool_calls", None):
+                context_msgs.append(m)
+
+    # Active turn from last HumanMessage onwards
+    active_slice = list(messages[last_human_idx:])
+    human_msg = active_slice[0]
+    cleaned = context_msgs + [human_msg]
+
+    # Process tool exchanges in the active turn
+    pending_tool_call_ids = set()
+    for msg in active_slice[1:]:
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            cleaned.append(msg)
+            pending_tool_call_ids = {tc["id"] for tc in msg.tool_calls}
+        elif isinstance(msg, ToolMessage):
+            if getattr(msg, "tool_call_id", None) in pending_tool_call_ids:
+                cleaned.append(ToolMessage(
+                    content=str(msg.content)[:1200],
+                    tool_call_id=msg.tool_call_id,
+                    name=getattr(msg, "name", None) or "search_news_tool"
+                ))
+                pending_tool_call_ids.discard(msg.tool_call_id)
+        elif isinstance(msg, AIMessage) and msg.content:
+            cleaned.append(msg)
+            pending_tool_call_ids = set()
+
+    return cleaned
+
+
 def call_model(state: AgentState) -> Dict[str, Any]:
     raw_messages = list(state["messages"])
+    cleaned_history = clean_messages_for_llm(raw_messages)
     
-    # Maintain a sliding window of the last 6 conversational messages to stay under TPM limits
-    windowed_messages = raw_messages[-6:] if len(raw_messages) > 6 else raw_messages
-    
-    # Always ensure system prompt leads the context
-    if not windowed_messages or not isinstance(windowed_messages[0], SystemMessage):
-        messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)] + windowed_messages
-    else:
-        messages = windowed_messages
+    # Always prepend SystemMessage
+    messages = [SystemMessage(content=CHAT_SYSTEM_PROMPT)] + [
+        m for m in cleaned_history if not isinstance(m, SystemMessage)
+    ]
     
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
@@ -149,7 +204,7 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
         articles_text="\n".join(articles_text)
     )
 
-    compiler_llm = get_resilient_llm()
+    compiler_llm = get_resilient_llm(max_tokens=3500)
     response = compiler_llm.invoke([
         SystemMessage(content="You are a professional AI news editor. Output clean, high-signal Telegram newsletter text."),
         HumanMessage(content=formatted_prompt)
@@ -178,15 +233,29 @@ def generate_newsletter(chat_id: int = None, limit_per_source: int = 4, **kwargs
 def chat_with_agent(chat_id: int, user_message: str) -> str:
     """
     Handles user chat, topic queries, and follow-ups with full conversational memory.
+    Resets thread state automatically if invalid/corrupt state is detected.
     """
     config = {"configurable": {"thread_id": str(chat_id)}}
     inputs = {"messages": [HumanMessage(content=user_message)]}
     
-    result = agent_graph.invoke(inputs, config=config)
-    messages = result.get("messages", [])
-    
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            return msg.content
-            
-    return "I processed your request, but found no matching news reports. What specific topic would you like to search?"
+    try:
+        result = agent_graph.invoke(inputs, config=config)
+        messages = result.get("messages", [])
+        
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                return msg.content
+                
+        return "I searched today's news feeds, but found no matching reports. What specific topic would you like to explore?"
+    except Exception as e:
+        logger.error(f"Error in chat_with_agent for {chat_id}: {e}", exc_info=True)
+        # Auto-recover by clearing corrupted checkpointer state
+        try:
+            conn = sqlite3.connect(MEMORY_DB_PATH)
+            with conn:
+                conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (str(chat_id),))
+                conn.execute("DELETE FROM writes WHERE thread_id = ?", (str(chat_id),))
+            conn.close()
+        except Exception:
+            pass
+        raise e
